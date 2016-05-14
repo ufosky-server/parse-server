@@ -10,6 +10,21 @@ let MongoClient = mongodb.MongoClient;
 const MongoSchemaCollectionName = '_SCHEMA';
 const DefaultMongoURI = 'mongodb://localhost:27017/parse';
 
+const storageAdapterAllCollections = mongoAdapter => {
+  return mongoAdapter.connect()
+  .then(() => mongoAdapter.database.collections())
+  .then(collections => {
+    return collections.filter(collection => {
+      if (collection.namespace.match(/\.system\./)) {
+        return false;
+      }
+      // TODO: If you have one app with a collection prefix that happens to be a prefix of another
+      // apps prefix, this will go very very badly. We should fix that somehow.
+      return (collection.collectionName.indexOf(mongoAdapter._collectionPrefix) == 0);
+    });
+  });
+}
+
 export class MongoStorageAdapter {
   // Private
   _uri: string;
@@ -70,7 +85,10 @@ export class MongoStorageAdapter {
     });
   }
 
-  dropCollection(className: string) {
+  // Deletes a schema. Resolve if successful. If the schema doesn't
+  // exist, resolve with undefined. If schema exists, but can't be deleted for some other reason,
+  // reject with INTERNAL_SERVER_ERROR.
+  deleteOneSchema(className: string) {
     return this.collection(this._collectionPrefix + className).then(collection => collection.drop())
     .catch(error => {
       // 'ns not found' means collection was already gone. Ignore deletion attempt.
@@ -81,18 +99,10 @@ export class MongoStorageAdapter {
     });
   }
 
-  // Used for testing only right now.
-  allCollections() {
-    return this.connect().then(() => {
-      return this.database.collections();
-    }).then(collections => {
-      return collections.filter(collection => {
-        if (collection.namespace.match(/\.system\./)) {
-          return false;
-        }
-        return (collection.collectionName.indexOf(this._collectionPrefix) == 0);
-      });
-    });
+  // Delete all data known to this adatper. Used for testing.
+  deleteAllSchemas() {
+    return storageAdapterAllCollections(this)
+    .then(collections => Promise.all(collections.map(collection => collection.drop())));
   }
 
   // Remove the column and all the data. For Relations, the _Join collection is handled
@@ -156,7 +166,35 @@ export class MongoStorageAdapter {
   createObject(className, object, schemaController, parseFormatSchema) {
     const mongoObject = transform.parseObjectToMongoObjectForCreate(schemaController, className, object, parseFormatSchema);
     return this.adaptiveCollection(className)
-    .then(collection => collection.insertOne(mongoObject));
+    .then(collection => collection.insertOne(mongoObject))
+    .catch(error => {
+      if (error.code === 11000) { // Duplicate value
+        throw new Parse.Error(Parse.Error.DUPLICATE_VALUE,
+            'A duplicate value for a field with unique values was provided');
+      }
+      return Promise.reject(error);
+    });
+  }
+
+  // Remove all objects that match the given parse query. Parse Query should be in Parse Format.
+  // If no objects match, reject with OBJECT_NOT_FOUND. If objects are found and deleted, resolve with undefined.
+  // If there is some other error, reject with INTERNAL_SERVER_ERROR.
+
+  // Currently accepts validate for legacy reasons. Currently accepts the schema, that may not actually be necessary.
+  deleteObjectsByQuery(className, query, validate, schema) {
+    return this.adaptiveCollection(className)
+    .then(collection => {
+      let mongoWhere = transform.transformWhere(className, query, { validate }, schema);
+      return collection.deleteMany(mongoWhere)
+    })
+    .then(({ result }) => {
+      if (result.n === 0) {
+        throw new Parse.Error(Parse.Error.OBJECT_NOT_FOUND, 'Object not found.');
+      }
+      return Promise.resolve();
+    }, error => {
+      throw new Parse.Error(Parse.Error.INTERNAL_SERVER_ERROR, 'Database adapter error');
+    });
   }
 
   get transform() {

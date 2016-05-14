@@ -93,6 +93,8 @@ const requiredColumns = Object.freeze({
 
 const systemClasses = Object.freeze(['_User', '_Installation', '_Role', '_Session', '_Product', '_PushStatus']);
 
+const volatileClasses = Object.freeze(['_PushStatus']);
+
 // 10 alpha numberic chars + uppercase
 const userIdRegex = /^[a-zA-Z0-9]{10}$/;
 // Anything that start with role
@@ -134,7 +136,7 @@ function validateCLP(perms, fields) {
       }
       return;
     }
-    
+
     Object.keys(perms[operation]).forEach((key) => {
       verifyPermissionKey(key);
       let perm = perms[operation][key];
@@ -251,6 +253,15 @@ class SchemaController {
         this.data[schema.className] = schema.fields;
         this.perms[schema.className] = schema.classLevelPermissions;
       });
+
+      // Inject the in-memory classes
+      volatileClasses.forEach(className => {
+        this.data[className] = injectDefaultSchema({
+          className,
+          fields: {},
+          classLevelPermissions: {}
+        });
+      });
     });
   }
 
@@ -259,7 +270,10 @@ class SchemaController {
     .then(allSchemas => allSchemas.map(injectDefaultSchema));
   }
 
-  getOneSchema(className) {
+  getOneSchema(className, allowVolatileClasses = false) {
+    if (allowVolatileClasses && volatileClasses.indexOf(className) > -1) {
+      return Promise.resolve(this.data[className]);
+    }
     return this._dbAdapter.getOneSchema(className)
     .then(injectDefaultSchema);
   }
@@ -452,13 +466,14 @@ class SchemaController {
   // If 'freeze' is true, refuse to update the schema for this field.
   validateField(className, fieldName, type, freeze) {
     return this.reloadData().then(() => {
-      // Just to check that the fieldName is valid
-      this._collection.transform.transformKey(this, className, fieldName);
-
-      if( fieldName.indexOf(".") > 0 ) {
+      if (fieldName.indexOf(".") > 0) {
         // subdocument key (x.y) => ok if x is of type 'object'
         fieldName = fieldName.split(".")[ 0 ];
         type = 'Object';
+      }
+
+      if (!fieldNameIsValid(fieldName)) {
+        throw new Parse.Error(Parse.Error.INVALID_KEY_NAME, `Invalid field name: ${fieldName}.`);
       }
 
       let expected = this.data[className][fieldName];
@@ -543,7 +558,7 @@ class SchemaController {
       if (this.data[className][fieldName].type == 'Relation') {
         //For relations, drop the _Join table
         return database.adapter.deleteFields(className, [fieldName], [])
-        .then(() => database.adapter.dropCollection(`_Join:${fieldName}:${className}`));
+        .then(() => database.adapter.deleteOneSchema(`_Join:${fieldName}:${className}`));
       }
 
       const fieldNames = [fieldName];
@@ -632,7 +647,7 @@ class SchemaController {
         found = true;
       }
     }
-     
+
     if (found) {
       return Promise.resolve();
     }
@@ -640,7 +655,7 @@ class SchemaController {
     // No matching CLP, let's check the Pointer permissions
     // And handle those later
     let permissionField = ['get', 'find'].indexOf(operation) > -1 ? 'readUserFields' : 'writeUserFields';
-    
+
     // Reject create when write lockdown
     if (permissionField == 'writeUserFields' && operation == 'create') {
       throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN,
@@ -833,6 +848,7 @@ function getObjectType(obj) {
 export {
   load,
   classNameIsValid,
+  fieldNameIsValid,
   invalidClassNameMessage,
   buildMergedSchemaObject,
   systemClasses,

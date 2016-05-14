@@ -1834,6 +1834,22 @@ describe('Parse.User testing', () => {
     });
   });
 
+  it('unset user email', (done) => {
+    var user = new Parse.User();
+    user.set('username', 'test');
+    user.set('password', 'test');
+    user.set('email', 'test@test.com');
+    user.signUp().then(() => {
+      user.unset('email');
+      return user.save();
+    }).then(() => {
+      return Parse.User.logIn('test', 'test');
+    }).then((user) => {
+      expect(user.getEmail()).toBeUndefined();
+      done();
+    });
+  });
+
   it('create session from user', (done) => {
     Parse.Promise.as().then(() => {
       return Parse.User.signUp("finn", "human", { foo: "bar" });
@@ -2115,9 +2131,7 @@ describe('Parse.User testing', () => {
     });
   });
 
-  // Sometimes the authData still has null on that keys
-  // https://github.com/ParsePlatform/parse-server/issues/935
-  it('should cleanup null authData keys', (done) => {
+  it('should cleanup null authData keys (regression test for #935)', (done) => {
     let database = new Config(Parse.applicationId).database;
     database.create('_User', {
       username: 'user',
@@ -2151,8 +2165,7 @@ describe('Parse.User testing', () => {
     })
   });
 
-  // https://github.com/ParsePlatform/parse-server/issues/1198
-  it('should cleanup null authData keys ParseUser update', (done) => {
+  it('should cleanup null authData keys ParseUser update (regression test for #1198)', (done) => {
     Parse.Cloud.beforeSave('_User', (req, res) => {
       req.object.set('foo', 'bar');
       res.success();
@@ -2347,4 +2360,67 @@ describe('Parse.User testing', () => {
       done();
     });
   });
+
+  it('should revoke sessions when converting anonymous user to "normal" user', done => {
+    request.post({
+      url: 'http://localhost:8378/1/classes/_User',
+      headers: {
+        'X-Parse-Application-Id': Parse.applicationId,
+        'X-Parse-REST-API-Key': 'rest',
+      },
+      json: {authData: {anonymous: {id: '00000000-0000-0000-0000-000000000001'}}}
+    }, (err, res, body) => {
+      Parse.User.become(body.sessionToken)
+      .then(user => {
+        let obj = new Parse.Object('TestObject');
+        obj.setACL(new Parse.ACL(user));
+        return obj.save()
+        .then(() => {
+          // Change password, revoking session
+          user.set('username', 'no longer anonymous');
+          user.set('password', 'password');
+          return user.save()
+        })
+        .then(() => obj.fetch())
+        .catch(error => {
+          expect(error.code).toEqual(Parse.Error.OBJECT_NOT_FOUND);
+          done();
+        });
+      })
+    });
+  });
+
+  it('should not revoke session tokens if the server is configures to not revoke session tokens', done => {
+    setServerConfiguration({
+      serverURL: 'http://localhost:8378/1',
+      appId: 'test',
+      masterKey: 'test',
+      cloud: './spec/cloud/main.js',
+      revokeSessionOnPasswordReset: false,
+    })
+    request.post({
+      url: 'http://localhost:8378/1/classes/_User',
+      headers: {
+        'X-Parse-Application-Id': Parse.applicationId,
+        'X-Parse-REST-API-Key': 'rest',
+      },
+      json: {authData: {anonymous: {id: '00000000-0000-0000-0000-000000000001'}}}
+    }, (err, res, body) => {
+      Parse.User.become(body.sessionToken)
+      .then(user => {
+        let obj = new Parse.Object('TestObject');
+        obj.setACL(new Parse.ACL(user));
+        return obj.save()
+        .then(() => {
+          // Change password, revoking session
+          user.set('username', 'no longer anonymous');
+          user.set('password', 'password');
+          return user.save()
+        })
+        .then(() => obj.fetch())
+        // fetch should succeed as we still have our session token
+        .then(done, fail);
+      })
+    });
+  })
 });
