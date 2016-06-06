@@ -203,7 +203,7 @@ describe('miscellaneous', function() {
       return obj.save();
     }).then(() => {
       var db = DatabaseAdapter.getDatabaseConnection(appId, 'test_');
-      return db.mongoFind('TestObject', {}, {});
+      return db.adapter.find('TestObject', {}, { fields: {} }, {});
     }).then((results) => {
       expect(results.length).toEqual(1);
       expect(results[0]['foo']).toEqual('bar');
@@ -252,6 +252,27 @@ describe('miscellaneous', function() {
       }).then(() => {
         // Make sure the checking has been triggered
         expect(triggerTime).toBe(2);
+        done();
+      }, error => {
+        fail(error);
+        done();
+      });
+    });
+    it('works when object is passed to success', done => {
+      let triggerTime = 0;
+      // Register a mock beforeSave hook
+      Parse.Cloud.beforeSave('GameScore', (req, res) => {
+        let object = req.object;
+        object.set('foo', 'bar');
+        triggerTime++;
+        res.success(object);
+      });
+
+      let obj = new Parse.Object('GameScore');
+      obj.set('foo', 'baz');
+      obj.save().then(() => {
+        expect(triggerTime).toBe(1);
+        expect(obj.get('foo')).toEqual('bar');
         done();
       }, error => {
         fail(error);
@@ -703,6 +724,36 @@ describe('miscellaneous', function() {
     });
   });
 
+  it('test cloud function error handling with custom error code', (done) => {
+    // Register a function which will fail
+    Parse.Cloud.define('willFail', (req, res) => {
+      res.error(999, 'noway');
+    });
+    Parse.Cloud.run('willFail').then((s) => {
+      fail('Should not have succeeded.');
+      done();
+    }, (e) => {
+      expect(e.code).toEqual(999);
+      expect(e.message).toEqual('noway');
+      done();
+    });
+  });
+
+  it('test cloud function error handling with standard error code', (done) => {
+    // Register a function which will fail
+    Parse.Cloud.define('willFail', (req, res) => {
+      res.error('noway');
+    });
+    Parse.Cloud.run('willFail').then((s) => {
+      fail('Should not have succeeded.');
+      done();
+    }, (e) => {
+      expect(e.code).toEqual(Parse.Error.SCRIPT_FAILED);
+      expect(e.message).toEqual('noway');
+      done();
+    });
+  });
+
   it('test beforeSave/afterSave get installationId', function(done) {
     let triggerTime = 0;
     Parse.Cloud.beforeSave('GameScore', function(req, res) {
@@ -1119,5 +1170,55 @@ describe('miscellaneous', function() {
       expect(error.code).toEqual(Parse.Error.INVALID_NESTED_KEY);
       done();
     })
+  });
+
+  it('does not change inner object keys named _auth_data_something', done => {
+    new Parse.Object('O').save({ innerObj: {_auth_data_facebook: 7}})
+    .then(object => new Parse.Query('O').get(object.id))
+    .then(object => {
+      expect(object.get('innerObj')).toEqual({_auth_data_facebook: 7});
+      done();
+    });
+  });
+
+  it('does not change inner object key names _p_somethign', done => {
+    new Parse.Object('O').save({ innerObj: {_p_data: 7}})
+    .then(object => new Parse.Query('O').get(object.id))
+    .then(object => {
+      expect(object.get('innerObj')).toEqual({_p_data: 7});
+      done();
+    });
+  });
+
+  it('does not change inner object key names _rperm, _wperm', done => {
+    new Parse.Object('O').save({ innerObj: {_rperm: 7, _wperm: 8}})
+    .then(object => new Parse.Query('O').get(object.id))
+    .then(object => {
+      expect(object.get('innerObj')).toEqual({_rperm: 7, _wperm: 8});
+      done();
+    });
+  });
+
+  it('does not change inner objects if the key has the same name as a geopoint field on the class, and the value is an array of length 2, or if the key has the same name as a file field on the class, and the value is a string', done => {
+    let file = new Parse.File('myfile.txt', { base64: 'eAo=' });
+    file.save()
+    .then(f => {
+      let obj = new Parse.Object('O');
+      obj.set('fileField', f);
+      obj.set('geoField', new Parse.GeoPoint(0, 0));
+      obj.set('innerObj', {
+        fileField: "data",
+        geoField: [1,2],
+      });
+      return obj.save();
+    })
+    .then(object => object.fetch())
+    .then(object => {
+      expect(object.get('innerObj')).toEqual({
+        fileField: "data",
+        geoField: [1,2],
+      });
+      done();
+    });
   });
 });

@@ -131,7 +131,8 @@ export function getResponseObject(request, resolve, reject) {
   return {
     success: function(response) {
       // Use the JSON response
-      if (response && request.triggerName === Types.beforeSave) {
+      if (response && !request.object.equals(response)
+          && request.triggerName === Types.beforeSave) {
         return resolve(response);
       }
       response = {};
@@ -140,8 +141,12 @@ export function getResponseObject(request, resolve, reject) {
       }
       return resolve(response);
     },
-    error: function(error) {
-      var scriptError = new Parse.Error(Parse.Error.SCRIPT_FAILED, error);
+    error: function(code, message) {
+      if (!message) {
+        message = code;
+        code = Parse.Error.SCRIPT_FAILED;
+      }
+      var scriptError = new Parse.Error(code, message);
       return reject(scriptError);
     }
   }

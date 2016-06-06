@@ -76,6 +76,7 @@ addParseCloud();
 // "clientKey": optional key from Parse dashboard
 // "dotNetKey": optional key from Parse dashboard
 // "restAPIKey": optional key from Parse dashboard
+// "webhookKey": optional key from Parse dashboard
 // "javascriptKey": optional key from Parse dashboard
 // "push": optional key from configure push
 // "sessionLength": optional length in seconds for how long Sessions should be valid for
@@ -98,6 +99,7 @@ class ParseServer {
     javascriptKey,
     dotNetKey,
     restAPIKey,
+    webhookKey,
     fileKey = 'invalid-file-key',
     facebookAppIds = [],
     enableAnonymousUsers = true,
@@ -166,7 +168,7 @@ class ParseServer {
     const filesController = new FilesController(filesControllerAdapter, appId);
     const pushController = new PushController(pushControllerAdapter, appId);
     const loggerController = new LoggerController(loggerControllerAdapter, appId);
-    const hooksController = new HooksController(appId, collectionPrefix);
+    const hooksController = new HooksController(appId, collectionPrefix, webhookKey);
     const userController = new UserController(emailControllerAdapter, appId, { verifyUserEmails });
     const liveQueryController = new LiveQueryController(liveQuery);
     const cacheController = new CacheController(cacheControllerAdapter, appId);
@@ -179,6 +181,7 @@ class ParseServer {
       javascriptKey: javascriptKey,
       dotNetKey: dotNetKey,
       restAPIKey: restAPIKey,
+      webhookKey: webhookKey,
       fileKey: fileKey,
       facebookAppIds: facebookAppIds,
       cacheController: cacheController,

@@ -1,6 +1,6 @@
 // Sets up a Parse API server for testing.
 
-jasmine.DEFAULT_TIMEOUT_INTERVAL = 2000;
+jasmine.DEFAULT_TIMEOUT_INTERVAL = 15000;
 
 var cache = require('../src/cache').default;
 var DatabaseAdapter = require('../src/DatabaseAdapter');
@@ -11,7 +11,7 @@ var path = require('path');
 var TestUtils = require('../src/index').TestUtils;
 var MongoStorageAdapter = require('../src/Adapters/Storage/Mongo/MongoStorageAdapter');
 
-var databaseURI = process.env.DATABASE_URI;
+var databaseURI = 'mongodb://localhost:27017/parseServerMongoAdapterTestDatabase';
 var port = 8378;
 
 // Default server configuration for tests.
@@ -23,6 +23,7 @@ var defaultConfiguration = {
   dotNetKey: 'windows',
   clientKey: 'client',
   restAPIKey: 'rest',
+  webhookKey: 'hook',
   masterKey: 'test',
   collectionPrefix: 'test_',
   fileKey: 'test',

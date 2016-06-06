@@ -1,5 +1,7 @@
 "use strict"
 const Parse = require("parse/node");
+const request = require('request');
+const InMemoryCacheAdapter = require('../src/Adapters/Cache/InMemoryCacheAdapter').InMemoryCacheAdapter;
 
 describe('Cloud Code', () => {
   it('can load absolute cloud code file', done => {
@@ -60,6 +62,23 @@ describe('Cloud Code', () => {
     }, () => {
       done();
     })
+  });
+
+  it('beforeSave rejection with custom error code', function(done) {
+    Parse.Cloud.beforeSave('BeforeSaveFailWithErrorCode', function (req, res) {
+      res.error(999, 'Nope');
+    });
+
+    var obj = new Parse.Object('BeforeSaveFailWithErrorCode');
+    obj.set('foo', 'bar');
+    obj.save().then(function() {
+      fail('Should not have been able to save BeforeSaveFailWithErrorCode class.');
+      done();
+    }, function(error) {
+      expect(error.code).toEqual(999);
+      expect(error.message).toEqual('Nope');
+      done();
+    });
   });
 
   it('basic beforeSave rejection via promise', function(done) {
@@ -464,6 +483,126 @@ describe('Cloud Code', () => {
       done();
     }, (e) => {
       fail('Validation should not have failed.');
+      done();
+    });
+  });
+
+  it('doesnt receive stale user in cloud code functions after user has been updated with master key (regression test for #1836)', done => {
+    Parse.Cloud.define('testQuery', function(request, response) {
+      response.success(request.user.get('data'));
+    });
+
+    Parse.User.signUp('user', 'pass')
+    .then(user => {
+      user.set('data', 'AAA');
+      return user.save();
+    })
+    .then(() => Parse.Cloud.run('testQuery'))
+    .then(result => {
+      expect(result).toEqual('AAA');
+      Parse.User.current().set('data', 'BBB');
+      return Parse.User.current().save(null, {useMasterKey: true});
+    })
+    .then(() => Parse.Cloud.run('testQuery'))
+    .then(result => {
+      expect(result).toEqual('BBB');
+      done();
+    });
+  });
+
+  it('clears out the user cache for all sessions when the user is changed', done => {
+    const cacheAdapter = new InMemoryCacheAdapter({ ttl: 100000000 });
+    setServerConfiguration(Object.assign({}, defaultConfiguration, { cacheAdapter: cacheAdapter }));
+    Parse.Cloud.define('checkStaleUser', (request, response) => {
+      response.success(request.user.get('data'));
+    });
+
+    let user = new Parse.User();
+    user.set('username', 'test');
+    user.set('password', 'moon-y');
+    user.set('data', 'first data');
+    user.signUp()
+    .then(user => {
+      let session1 = user.getSessionToken();
+      request.get({
+        url: 'http://localhost:8378/1/login?username=test&password=moon-y',
+        json: true,
+        headers: {
+          'X-Parse-Application-Id': 'test',
+          'X-Parse-REST-API-Key': 'rest',
+        },
+      }, (error, response, body) => {
+        let session2 = body.sessionToken;
+
+        //Ensure both session tokens are in the cache
+        Parse.Cloud.run('checkStaleUser')
+        .then(() => {
+          request.post({
+            url: 'http://localhost:8378/1/functions/checkStaleUser',
+            json: true,
+            headers: {
+              'X-Parse-Application-Id': 'test',
+              'X-Parse-REST-API-Key': 'rest',
+              'X-Parse-Session-Token': session2,
+            }
+          }, (error, response, body) => {
+            Parse.Promise.all([cacheAdapter.get('test:user:' + session1), cacheAdapter.get('test:user:' + session2)])
+            .then(cachedVals => {
+              expect(cachedVals[0].objectId).toEqual(user.id);
+              expect(cachedVals[1].objectId).toEqual(user.id);
+
+              //Change with session 1 and then read with session 2.
+              user.set('data', 'second data');
+              user.save()
+              .then(() => {
+                request.post({
+                  url: 'http://localhost:8378/1/functions/checkStaleUser',
+                  json: true,
+                  headers: {
+                    'X-Parse-Application-Id': 'test',
+                    'X-Parse-REST-API-Key': 'rest',
+                    'X-Parse-Session-Token': session2,
+                  }
+                }, (error, response, body) => {
+                  expect(body.result).toEqual('second data');
+                  done();
+                })
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+
+  it('trivial beforeSave should not affect fetched pointers (regression test for #1238)', done => {
+    Parse.Cloud.beforeSave('BeforeSaveUnchanged', (req, res) => {
+      res.success();
+    });
+
+    var TestObject =  Parse.Object.extend("TestObject");
+    var NoBeforeSaveObject = Parse.Object.extend("NoBeforeSave");
+    var BeforeSaveObject = Parse.Object.extend("BeforeSaveUnchanged");
+
+    var aTestObject = new TestObject();
+    aTestObject.set("foo", "bar");
+    aTestObject.save()
+    .then(aTestObject => {
+      var aNoBeforeSaveObj = new NoBeforeSaveObject();
+      aNoBeforeSaveObj.set("aTestObject", aTestObject);
+      expect(aNoBeforeSaveObj.get("aTestObject").get("foo")).toEqual("bar");
+      return aNoBeforeSaveObj.save();
+    })
+    .then(aNoBeforeSaveObj => {
+      expect(aNoBeforeSaveObj.get("aTestObject").get("foo")).toEqual("bar");
+
+      var aBeforeSaveObj = new BeforeSaveObject();
+      aBeforeSaveObj.set("aTestObject", aTestObject);
+      expect(aBeforeSaveObj.get("aTestObject").get("foo")).toEqual("bar");
+      return aBeforeSaveObj.save();
+    })
+    .then(aBeforeSaveObj => {
+      expect(aBeforeSaveObj.get("aTestObject").get("foo")).toEqual("bar");
       done();
     });
   });

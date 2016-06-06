@@ -11,6 +11,8 @@ var cryptoUtils = require('./cryptoUtils');
 var passwordCrypto = require('./password');
 var Parse = require('parse/node');
 var triggers = require('./triggers');
+import RestQuery from './RestQuery';
+import _         from 'lodash';
 
 // query and data are both provided in REST API format. So data
 // types are encoded by plain old objects.
@@ -164,8 +166,10 @@ RestWrite.prototype.runBeforeTrigger = function() {
     return triggers.maybeRunTrigger(triggers.Types.beforeSave, this.auth, updatedObject, originalObject, this.config);
   }).then((response) => {
     if (response && response.object) {
+      if (!_.isEqual(this.data, response.object)) {
+        this.storage.changedByTrigger = true;
+      }
       this.data = response.object;
-      this.storage['changedByTrigger'] = true;
       // We should delete the objectId for an update write
       if (this.query && this.query.objectId) {
         delete this.data.objectId
@@ -318,10 +322,17 @@ RestWrite.prototype.transformUser = function() {
 
   var promise = Promise.resolve();
 
-  // If we're updating a _User object, clear the user cache for the session
-  if (this.query && this.auth.user && this.auth.user.getSessionToken()) {
-    let cacheAdapter = this.config.cacheController;
-    cacheAdapter.user.del(this.auth.user.getSessionToken());
+  if (this.query) {
+    // If we're updating a _User object, we need to clear out the cache for that user. Find all their
+    // session tokens, and remove them from the cache.
+    promise = new RestQuery(this.config, Auth.master(this.config), '_Session', { user: {
+      __type: "Pointer",
+      className: "_User",
+      objectId: this.objectId(),
+    }}).execute()
+    .then(results => {
+      results.results.forEach(session => this.config.cacheController.user.del(session.sessionToken));
+    });
   }
 
   return promise.then(() => {
@@ -414,8 +425,7 @@ RestWrite.prototype.createSessionTokenIfNeeded = function() {
   if (this.response && this.response.response) {
     this.response.response.sessionToken = token;
   }
-  var create = new RestWrite(this.config, Auth.master(this.config),
-                                 '_Session', null, sessionData);
+  var create = new RestWrite(this.config, Auth.master(this.config), '_Session', null, sessionData);
   return create.execute();
 }
 
@@ -482,8 +492,7 @@ RestWrite.prototype.handleSession = function() {
       }
       sessionData[key] = this.data[key];
     }
-    var create = new RestWrite(this.config, Auth.master(this.config),
-                               '_Session', null, sessionData);
+    var create = new RestWrite(this.config, Auth.master(this.config), '_Session', null, sessionData);
     return create.execute().then((results) => {
       if (!results.response) {
         throw new Parse.Error(Parse.Error.INTERNAL_SERVER_ERROR,
@@ -727,19 +736,16 @@ RestWrite.prototype.runDatabaseOperation = function() {
       this.data.ACL[this.query.objectId] = { read: true, write: true };
     }
     // Run an update
-    return this.config.database.update(
-      this.className, this.query, this.data, this.runOptions).then((resp) => {
-        resp.updatedAt = this.updatedAt;
-        if (this.storage['changedByTrigger']) {
-          resp = Object.keys(this.data).reduce((memo, key) => {
-            memo[key] = resp[key] || this.data[key];
-            return memo;
-          }, resp);
-        }
-        this.response = {
-          response: resp
-        };
-      });
+    return this.config.database.update(this.className, this.query, this.data, this.runOptions)
+    .then(response => {
+      response.updatedAt = this.updatedAt;
+      if (this.storage.changedByTrigger) {
+        Object.keys(this.data).forEach(fieldName => {
+          response[fieldName] = response[fieldName] || this.data[fieldName];
+        });
+      }
+      this.response = { response };
+    });
   } else {
     // Set the default ACL for the new _User
     if (this.className === '_User') {
@@ -756,23 +762,20 @@ RestWrite.prototype.runDatabaseOperation = function() {
 
     // Run a create
     return this.config.database.create(this.className, this.data, this.runOptions)
-      .then((resp) => {
-        Object.assign(resp, {
-          objectId: this.data.objectId,
-          createdAt: this.data.createdAt
+    .then(response => {
+      response.objectId = this.data.objectId;
+      response.createdAt = this.data.createdAt;
+      if (this.storage.changedByTrigger) {
+        Object.keys(this.data).forEach(fieldName => {
+          response[fieldName] = response[fieldName] || this.data[fieldName];
         });
-        if (this.storage['changedByTrigger']) {
-          resp = Object.keys(this.data).reduce((memo, key) => {
-            memo[key] = resp[key] || this.data[key];
-            return memo;
-          }, resp);
-        }
-        this.response = {
-          status: 201,
-          response: resp,
-          location: this.location()
-        };
-      });
+      }
+      this.response = {
+        status: 201,
+        response,
+        location: this.location()
+      };
+    });
   }
 };
 
